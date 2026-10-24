@@ -5,6 +5,7 @@ import glob
 import os
 import queue
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -13,7 +14,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from tkinter.scrolledtext import ScrolledText
 
-from . import backup, lists, ping
+from . import backup, lists, mods, ping
 from .config import DEFAULT_TUNNEL, Config, new_server
 from .props import KNOWN, ServerProperties, level_name, server_port
 from .server import (RUNNING, STARTING, STATUS_RU, STOPPED, STOPPING, ServerProcess, detect_launch,
@@ -345,8 +346,19 @@ class App:
         self.tunnel = Tunnel(self.cfg.tunnel, lambda k, p: self.q.put(("tunnel", k, p)))
 
         root.title(APP_TITLE)
-        root.geometry(self.cfg.data.get("geometry", "1200x760"))
-        root.minsize(980, 620)
+        self.scale = max(1.0, root.winfo_fpixels("1i") / 96.0)
+        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+        want_w, want_h = int(1200 * self.scale), int(780 * self.scale)
+        geo = self.cfg.data.get("geometry2")
+        if geo:
+            root.geometry(geo)
+        elif want_w >= sw * 0.95 or want_h >= sh * 0.9:
+            root.geometry("%dx%d+0+0" % (sw * 0.9, sh * 0.85))
+            if sys.platform == "win32":
+                root.state("zoomed")
+        else:
+            root.geometry("%dx%d" % (want_w, want_h))
+        root.minsize(int(900 * self.scale), int(600 * self.scale))
         self._style()
         self._build()
         self.refresh_server_list()
@@ -391,11 +403,9 @@ class App:
         left = ttk.Frame(main, padding=(8, 8, 4, 8))
         main.add(left, weight=0)
         ttk.Label(left, text="Серверы", style="Title.TLabel").pack(anchor="w")
-        self.srv_tree = ttk.Treeview(left, columns=("core",), show="tree headings", selectmode="browse", height=20)
-        self.srv_tree.heading("#0", text="Название")
-        self.srv_tree.heading("core", text="Ядро")
-        self.srv_tree.column("#0", width=150)
-        self.srv_tree.column("core", width=90)
+        self.srv_tree = ttk.Treeview(left, show="tree", selectmode="browse", height=20)
+        self.srv_tree.column("#0", width=200, stretch=True)
+        ttk.Style().configure("Treeview", rowheight=int(22 * self.scale))
         self.srv_tree.tag_configure("running", foreground=STATUS_COLORS[RUNNING])
         self.srv_tree.tag_configure("starting", foreground=STATUS_COLORS[STARTING])
         self.srv_tree.pack(fill="both", expand=True, pady=6)
@@ -416,7 +426,12 @@ class App:
         # --- правая часть
         right = ttk.Frame(main, padding=(4, 8, 8, 4))
         main.add(right, weight=1)
-        self.root.after(80, lambda: main.sashpos(0, 280))
+        def place_sash(tries=20):
+            if main.winfo_width() > 300:
+                main.sashpos(0, int(260 * self.scale))
+            elif tries:
+                self.root.after(100, lambda: place_sash(tries - 1))
+        self.root.after(100, place_sash)
 
         top = ttk.Frame(right)
         top.pack(fill="x")
@@ -426,6 +441,8 @@ class App:
         self.status_dot.pack(side="left", padx=(12, 4))
         self.lbl_status = ttk.Label(top, text="", style="Big.TLabel")
         self.lbl_status.pack(side="left", padx=(0, 20))
+        self.lbl_sub = ttk.Label(right, text="", foreground="#666")
+        self.lbl_sub.pack(anchor="w")
 
         ctl = ttk.Frame(right)
         ctl.pack(fill="x", pady=(8, 6))
@@ -440,8 +457,8 @@ class App:
         self.btn_backup_now = ttk.Button(ctl, text="💾  Бэкап сейчас", command=lambda: self.backup_now())
         self.btn_backup_now.pack(side="left", padx=(12, 0))
 
-        tf = ttk.Frame(top)
-        tf.pack(side="right")
+        tf = ttk.Frame(right)
+        tf.pack(fill="x", pady=(0, 6), after=ctl)
         ttk.Label(tf, text="Доступ из интернета:").pack(side="left", padx=(0, 6))
         self.tunnel_dot = tk.Canvas(tf, width=14, height=14, highlightthickness=0)
         self.tunnel_dot.pack(side="left")
@@ -449,7 +466,7 @@ class App:
         self.lbl_tunnel.pack(side="left", padx=(4, 8))
         self.lbl_tunnel.bind("<Button-1>", self.copy_address)
         self.btn_tunnel = ttk.Button(tf, text="Открыть доступ", width=16, command=self.toggle_tunnel)
-        self.btn_tunnel.pack(side="left")
+        self.btn_tunnel.pack(side="left", padx=(0, 8), before=self.tunnel_dot)
 
         self.nb = ttk.Notebook(right)
         self.nb.pack(fill="both", expand=True)
@@ -458,6 +475,7 @@ class App:
         self._build_lists()
         self._build_props()
         self._build_worlds()
+        self._build_mods()
         self._build_settings()
         self._update_tunnel_ui()
 
@@ -650,8 +668,15 @@ class App:
 
         bl = ttk.LabelFrame(f, text="Бэкапы", padding=6)
         bl.pack(fill="both", expand=True)
-        self.lbl_backup_dir = ttk.Label(bl, text="", foreground="#666")
-        self.lbl_backup_dir.pack(anchor="w")
+        dr = ttk.Frame(bl)
+        dr.pack(fill="x")
+        ttk.Label(dr, text="Папка:").pack(side="left")
+        self.lbl_backup_dir = ttk.Label(dr, text="", foreground="#0a58ca", cursor="hand2")
+        self.lbl_backup_dir.pack(side="left", padx=4, fill="x", expand=True)
+        self.lbl_backup_dir.bind("<Button-1>", lambda e: self.open_backup_folder())
+        ttk.Button(dr, text="По умолчанию", command=lambda: self.set_backup_dir("")).pack(side="right")
+        ttk.Button(dr, text="Создать новую…", command=self.create_backup_dir).pack(side="right", padx=4)
+        ttk.Button(dr, text="Выбрать папку…", command=self.choose_backup_dir).pack(side="right")
         body = ttk.Frame(bl)
         body.pack(fill="both", expand=True, pady=4)
         self.backup_tree = ttk.Treeview(body, columns=("date", "size"), show="tree headings", selectmode="extended")
@@ -673,6 +698,50 @@ class App:
         ttk.Button(bb, text="Открыть папку бэкапов", command=self.open_backup_folder).pack(side="left", padx=4)
         ttk.Label(bl, text="Старые бэкапы удаляются автоматически (см. «Изменить» сервер), кроме помеченных словом keep.",
                   foreground="#666").pack(anchor="w", pady=(4, 0))
+
+    # ---------- вкладка: моды
+    def _build_mods(self):
+        f = ttk.Frame(self.nb, padding=6)
+        self.nb.add(f, text="Моды")
+        top = ttk.Frame(f)
+        top.pack(fill="x", pady=(0, 6))
+        ttk.Label(top, text="Поиск:").pack(side="left")
+        self.mods_filter = tk.StringVar()
+        self.mods_filter.trace_add("write", lambda *a: self.fill_mods())
+        ttk.Entry(top, textvariable=self.mods_filter, width=24).pack(side="left", padx=4)
+        self.lbl_mods = ttk.Label(top, text="", foreground="#666")
+        self.lbl_mods.pack(side="left", padx=10)
+        ttk.Button(top, text="Обновить", command=self.refresh_mods).pack(side="right")
+        ttk.Button(top, text="Открыть папку", command=self.open_mods_folder).pack(side="right", padx=4)
+        body = ttk.Frame(f)
+        body.pack(fill="both", expand=True)
+        self.mods_tree = ttk.Treeview(body, columns=("on", "version", "loader", "file", "size"),
+                                      show="tree headings", selectmode="extended")
+        for key, title, w, st in (("#0", "Мод", 240, True), ("on", "Вкл.", 50, False), ("version", "Версия", 120, False),
+                                  ("loader", "Тип", 80, False), ("file", "Файл", 260, True), ("size", "Размер", 80, False)):
+            self.mods_tree.heading(key, text=title)
+            self.mods_tree.column(key, width=int(w * self.scale), stretch=st, anchor="center" if key == "on" else "w")
+        self.mods_tree.tag_configure("off", foreground="#999999")
+        ys = ttk.Scrollbar(body, orient="vertical", command=self.mods_tree.yview)
+        self.mods_tree.configure(yscrollcommand=ys.set)
+        self.mods_tree.pack(side="left", fill="both", expand=True)
+        ys.pack(side="left", fill="y")
+        self.mods_tree.bind("<Double-1>", lambda e: self.toggle_mods())
+        self.mods_tree.bind("<space>", lambda e: self.toggle_mods())
+        self.mods_tree.bind("<<TreeviewSelect>>", self._mod_selected)
+        self.lbl_mod_desc = ttk.Label(f, text="", foreground="#555", wraplength=int(900 * self.scale), justify="left")
+        self.lbl_mod_desc.pack(fill="x", pady=(4, 0))
+        bb = ttk.Frame(f)
+        bb.pack(fill="x", pady=(4, 0))
+        ttk.Button(bb, text="Вкл./выкл. выбранные", command=self.toggle_mods).pack(side="left")
+        ttk.Button(bb, text="Включить все", command=lambda: self.set_all_mods(True)).pack(side="left", padx=4)
+        ttk.Button(bb, text="Выключить все", command=lambda: self.set_all_mods(False)).pack(side="left")
+        ttk.Button(bb, text="Добавить моды…", command=self.add_mods).pack(side="left", padx=(12, 4))
+        ttk.Button(bb, text="Удалить", command=self.delete_mods).pack(side="left")
+        ttk.Label(f, text="Двойной клик или пробел — включить/выключить. Выключенный мод переименовывается в .jar.disabled, "
+                          "как в Prism Launcher. Изменения применяются после перезапуска сервера.",
+                  foreground="#666", wraplength=int(900 * self.scale), justify="left").pack(anchor="w", pady=(4, 0))
+        self.mods = []
 
     # ---------- вкладка: настройки
     def _build_settings(self):
@@ -742,11 +811,19 @@ class App:
             p = self.procs.get(s["id"])
             st = p.status if p else STOPPED
             mark = {RUNNING: "● ", STARTING: "◐ ", STOPPING: "◐ "}.get(st, "○ ")
-            core = os.path.basename(s.get("jar") or "") if s.get("launch_mode") == "jar" else "Forge/свои арг."
             tags = ("running",) if st == RUNNING else ("starting",) if st in (STARTING, STOPPING) else ()
-            self.srv_tree.insert("", "end", iid=s["id"], text=mark + s["name"], values=(core,), tags=tags)
+            self.srv_tree.insert("", "end", iid=s["id"], text=mark + s["name"], tags=tags)
         if self.current and self.srv_tree.exists(self.current):
             self.srv_tree.selection_set(self.current)
+
+    @staticmethod
+    def _server_summary(s):
+        core = os.path.basename(s.get("jar") or "—") if s.get("launch_mode") == "jar" else "свои аргументы запуска"
+        java = s.get("java") or "java"
+        if java != "java":
+            java = os.path.basename(os.path.dirname(os.path.dirname(java))) or java
+        return "Ядро: %s   ·   Java: %s   ·   RAM: %s–%s   ·   %s" % (core, java, s.get("xms") or "?",
+                                                                    s.get("xmx") or "?", s["path"])
 
     def _on_tree_select(self, _e):
         sel = self.srv_tree.selection()
@@ -765,11 +842,13 @@ class App:
             self.srv_tree.see(sid)
         s = self.srv()
         self.lbl_name.configure(text=s["name"] if s else "Добавьте сервер кнопкой «Добавить»")
+        self.lbl_sub.configure(text=self._server_summary(s) if s else "")
         self.reload_console()
         self.load_props()
         self.reload_lists()
         self.refresh_backups()
         self.update_world_info()
+        self.refresh_mods()
         p = self.procs.get(sid) if sid else None
         self.players_list.delete(0, "end")
         for n in sorted(p.players) if p else []:
@@ -1329,6 +1408,117 @@ class App:
         if self.props and self.props.exists:
             open_path(self.props.path)
 
+    # ================================================================ моды
+    def refresh_mods(self):
+        s = self.srv()
+        self.mods = []
+        self.fill_mods()
+        if not s:
+            return
+        sid = s["id"]
+
+        def done(result):
+            if self.current == sid:
+                self.mods = result
+                self.fill_mods()
+        self.run_bg(None, lambda: mods.list_mods(s["path"]), done)
+
+    def fill_mods(self):
+        tree = self.mods_tree
+        sel = set(tree.selection())
+        tree.delete(*tree.get_children())
+        s = self.srv()
+        if not s:
+            self.lbl_mods.configure(text="")
+            return
+        if not mods.mod_dirs(s["path"]):
+            self.lbl_mods.configure(text="У этого сервера нет папки mods или plugins.")
+            return
+        flt = self.mods_filter.get().strip().lower()
+        shown = 0
+        for m in self.mods:
+            if flt and flt not in m["name"].lower() and flt not in m["file"].lower():
+                continue
+            shown += 1
+            tree.insert("", "end", iid=m["path"], text=m["name"],
+                        values=("✔" if m["enabled"] else "—", m["version"], m["loader"] or m["folder"],
+                                m["folder"] + "/" + m["file"], backup.human_size(m["size"])),
+                        tags=() if m["enabled"] else ("off",))
+            if m["path"] in sel:
+                tree.selection_add(m["path"])
+        on = sum(1 for m in self.mods if m["enabled"])
+        self.lbl_mods.configure(text="Всего: %d, включено: %d, выключено: %d" % (len(self.mods), on, len(self.mods) - on))
+
+    def _mod_selected(self, _e=None):
+        sel = self.mods_tree.selection()
+        m = next((m for m in self.mods if sel and m["path"] == sel[0]), None)
+        self.lbl_mod_desc.configure(text=(m["desc"] or "")[:300] if m else "")
+
+    def _apply_mod_changes(self, changes):
+        """changes: список (mod, enabled)."""
+        errors, keep = [], []
+        for m, en in changes:
+            try:
+                new = mods.set_enabled(m["path"], en)
+                m["path"], m["enabled"] = new, en
+            except (OSError, RuntimeError) as e:
+                errors.append("%s: %s" % (m["file"], e))
+            keep.append(m["path"])
+        self.fill_mods()
+        self.mods_tree.selection_set([k for k in keep if self.mods_tree.exists(k)])
+        if errors:
+            messagebox.showerror(APP_TITLE, "Не удалось переключить:\n" + "\n".join(errors[:10]))
+        if changes:
+            p = self.procs.get(self.current)
+            self.set_bar("Моды изменены" + (" — перезапустите сервер, чтобы применить" if p and p.running else ""))
+
+    def toggle_mods(self):
+        sel = set(self.mods_tree.selection())
+        self._apply_mod_changes([(m, not m["enabled"]) for m in self.mods if m["path"] in sel])
+        return "break"
+
+    def set_all_mods(self, enabled):
+        targets = [m for m in self.mods if m["enabled"] != enabled]
+        if targets and messagebox.askyesno(APP_TITLE, "%s все моды (%d шт.)?" % ("Включить" if enabled else "Выключить",
+                                                                                 len(targets))):
+            self._apply_mod_changes([(m, enabled) for m in targets])
+
+    def add_mods(self):
+        s = self.srv()
+        if not s:
+            return
+        files = filedialog.askopenfilenames(title="Выберите моды (.jar)", filetypes=[("Моды", "*.jar"), ("Все файлы", "*.*")])
+        if not files:
+            return
+        dirs = mods.mod_dirs(s["path"])
+        folder = dirs[0] if len(dirs) == 1 else "mods"
+        if len(dirs) > 1 and not messagebox.askyesno(APP_TITLE, "Положить файлы в mods?\n(Нет — в plugins)"):
+            folder = "plugins"
+        self.run_bg("Копирую моды…", lambda: mods.add_mods(s["path"], files, folder), lambda _r: self.refresh_mods())
+
+    def delete_mods(self):
+        sel = set(self.mods_tree.selection())
+        targets = [m for m in self.mods if m["path"] in sel]
+        if not targets:
+            return
+        if not messagebox.askyesno(APP_TITLE, "Удалить с диска %d файл(ов)?\n%s" % (
+                len(targets), "\n".join(m["file"] for m in targets[:15]))):
+            return
+        for m in targets:
+            try:
+                os.remove(m["path"])
+            except OSError as e:
+                messagebox.showerror(APP_TITLE, str(e))
+        self.refresh_mods()
+
+    def open_mods_folder(self):
+        s = self.srv()
+        if s:
+            dirs = mods.mod_dirs(s["path"])
+            path = os.path.join(s["path"], dirs[0] if dirs else "mods")
+            os.makedirs(path, exist_ok=True)
+            open_path(path)
+
     # ================================================================ мир и бэкапы
     def update_world_info(self):
         s = self.srv()
@@ -1339,7 +1529,7 @@ class App:
         name = level_name(s["path"])
         dirs = backup.world_dirs(s["path"])
         self.lbl_world.configure(text="Мир: %s   (%s)" % (name, ", ".join(dirs) if dirs else "ещё не создан"))
-        self.lbl_backup_dir.configure(text="Папка: " + backup.backup_dir(s))
+        self.lbl_backup_dir.configure(text=backup.backup_dir(s) + ("" if s.get("backup_dir") else "  (по умолчанию)"))
         sid = s["id"]
 
         def calc():
@@ -1492,6 +1682,52 @@ class App:
             d = backup.backup_dir(s)
             os.makedirs(d, exist_ok=True)
             open_path(d)
+
+    def set_backup_dir(self, path):
+        s = self.srv()
+        if not s:
+            return
+        old = backup.list_backups(s)
+        s["backup_dir"] = os.path.normpath(path) if path else ""
+        self.cfg.save()
+        self.update_world_info()
+        self.refresh_backups()
+        if old and backup.backup_dir(s) != os.path.dirname(old[0]["path"]):
+            if messagebox.askyesno(APP_TITLE, "В старой папке %d бэкап(ов). Перенести их в новую папку?" % len(old)):
+                def move():
+                    os.makedirs(backup.backup_dir(s), exist_ok=True)
+                    for b in old:
+                        shutil.move(b["path"], os.path.join(backup.backup_dir(s), b["name"]))
+                self.run_bg("Переношу бэкапы…", move, lambda _r: self.refresh_backups())
+        self.set_bar("Папка бэкапов: " + backup.backup_dir(s))
+
+    def choose_backup_dir(self):
+        s = self.srv()
+        if not s:
+            return
+        d = filedialog.askdirectory(title="Папка для бэкапов «%s»" % s["name"], initialdir=backup.backup_dir(s)
+                                    if os.path.isdir(backup.backup_dir(s)) else s["path"])
+        if d:
+            self.set_backup_dir(d)
+
+    def create_backup_dir(self):
+        s = self.srv()
+        if not s:
+            return
+        parent = filedialog.askdirectory(title="Где создать папку для бэкапов?")
+        if not parent:
+            return
+        name = simpledialog.askstring(APP_TITLE, "Имя новой папки:", parent=self.root,
+                                      initialvalue="Бэкапы %s" % re.sub(r'[\\/:*?"<>|]', "_", s["name"]))
+        if not name or not name.strip():
+            return
+        path = os.path.join(parent, name.strip())
+        try:
+            os.makedirs(path, exist_ok=True)
+        except OSError as e:
+            messagebox.showerror(APP_TITLE, "Не удалось создать папку: %s" % e)
+            return
+        self.set_backup_dir(path)
 
     def open_world_folder(self):
         s = self.srv()
@@ -1744,7 +1980,8 @@ class App:
     def _final_close(self):
         self.tunnel.stop()
         try:
-            self.cfg.data["geometry"] = self.root.geometry()
+            if self.root.state() == "normal":
+                self.cfg.data["geometry2"] = self.root.geometry()
             self.cfg.save()
         except OSError:
             pass
