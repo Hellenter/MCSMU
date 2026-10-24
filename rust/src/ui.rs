@@ -30,8 +30,12 @@ pub fn apply_theme(ctx: &egui::Context, dark: bool) {
         v.widgets.hovered.weak_bg_fill = Color32::from_rgb(58, 63, 72);
         v.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(72, 78, 88));
     }
-    ctx.set_visuals(v);
-    ctx.style_mut(|s| {
+    // Тема задаётся явно: иначе egui следует системной теме Windows и затирает наши цвета при старте
+    let theme = if dark { egui::Theme::Dark } else { egui::Theme::Light };
+    ctx.set_theme(theme);
+    ctx.set_visuals_of(egui::Theme::Dark, v.clone());
+    ctx.set_visuals_of(egui::Theme::Light, v);
+    ctx.all_styles_mut(|s| {
         s.spacing.item_spacing = Vec2::new(8.0, 6.0);
         s.spacing.button_padding = Vec2::new(10.0, 5.0);
         s.spacing.interact_size.y = 26.0;

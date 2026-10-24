@@ -30,14 +30,13 @@ enum Tab {
     Settings,
 }
 
-const TABS: [(Tab, &str); 7] = [
+const TABS: [(Tab, &str); 6] = [
     (Tab::Console, "🖥  Консоль"),
     (Tab::Stats, "📊  Статистика"),
     (Tab::Access, "👥  Игроки и доступ"),
     (Tab::Props, "⚙  server.properties"),
     (Tab::World, "🌍  Мир и бэкапы"),
     (Tab::Mods, "🔌  Моды"),
-    (Tab::Settings, "🔧  Настройки"),
 ];
 
 enum TaskResult {
@@ -112,6 +111,7 @@ pub struct App {
     procs: HashMap<String, Arc<ServerProcess>>,
     current: Option<String>,
     tab: Tab,
+    prev_tab: Tab,
     tunnel: Tunnel,
     // консоль
     cmd_input: String,
@@ -184,6 +184,7 @@ impl App {
             procs: HashMap::new(),
             current: None,
             tab: Tab::Console,
+            prev_tab: Tab::Console,
             tunnel,
             cmd_input: String::new(),
             cmd_history: vec![],
@@ -1104,8 +1105,28 @@ impl App {
         }
     }
 
+    /// Кнопка настроек в правом верхнем углу; повторное нажатие возвращает на прошлую вкладку.
+    fn settings_button(&mut self, ui: &mut Ui) {
+        let on = self.tab == Tab::Settings;
+        if ui.selectable_label(on, RichText::new("🔧  Настройки").size(15.0)).clicked() {
+            if on {
+                self.tab = self.prev_tab;
+            } else {
+                self.prev_tab = self.tab;
+                self.tab = Tab::Settings;
+            }
+        }
+    }
+
     fn main_area(&mut self, ui: &mut Ui) {
         let Some(s) = self.cur() else {
+            ui.add_space(6.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| self.settings_button(ui));
+            if self.tab == Tab::Settings {
+                ui.separator();
+                self.tab_settings(ui);
+                return;
+            }
             ui.centered_and_justified(|ui| {
                 ui.label(RichText::new("Добавьте сервер кнопкой «➕ Добавить» слева").size(18.0).weak());
             });
@@ -1115,9 +1136,14 @@ impl App {
         let st = p.status();
         let running = p.running();
         ui.add_space(6.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.add(egui::Label::new(RichText::new(&s.name).heading().strong()).wrap());
-            pill(ui, st.ru(), status_color(st));
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                self.settings_button(ui);
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true), |ui| {
+                    ui.add(egui::Label::new(RichText::new(&s.name).heading().strong()).wrap());
+                    pill(ui, st.ru(), status_color(st));
+                });
+            });
         });
         let core = if s.launch_mode == "jar" { s.jar.clone() } else { "свои аргументы запуска".into() };
         ui.add(egui::Label::new(RichText::new(format!("Ядро: {}   ·   Java: {}   ·   RAM: {}–{}   ·   {}",
