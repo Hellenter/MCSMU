@@ -5,7 +5,21 @@ on:
   pull_request:
   workflow_dispatch:
 jobs:
-  build:
+  rust:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - run: cargo build --release
+        working-directory: rust
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MCServerManager
+          path: rust/target/release/MCServerManager.exe
+  python:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -13,8 +27,8 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install pyinstaller psutil
-      - run: pyinstaller --noconfirm --onefile --windowed --name MCServerManager main.py
+      - run: pyinstaller --noconfirm --onefile --windowed --name MCServerManager-python main.py
       - uses: actions/upload-artifact@v4
         with:
-          name: MCServerManager
-          path: dist/MCServerManager.exe
+          name: MCServerManager-python
+          path: dist/MCServerManager-python.exe

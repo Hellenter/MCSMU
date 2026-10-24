@@ -1,5 +1,12 @@
 # MC Server Manager
 
+> **Версия 2 написана на Rust** (папка `rust/`, интерфейс на egui): один `MCServerManager.exe` без зависимостей,
+> быстрый запуск, тёмная тема, живые графики, редактирование server.properties прямо в таблице.
+> Готовый exe собирается в GitHub Actions (вкладка Actions → артефакт **MCServerManager**).
+> Собрать самому: установить Rust с https://rustup.rs и выполнить `cargo build --release` в папке `rust`.
+> Настройки общие с Python-версией (`%APPDATA%\MCServerManager\config.json`), список серверов переносится сам.
+> Python-версия (файлы в корне) оставлена как запасная.
+
 Программа для Windows (работает и на Linux/macOS) для управления несколькими серверами Minecraft
 разных версий из одного окна.
 
