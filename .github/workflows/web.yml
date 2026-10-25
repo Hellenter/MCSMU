@@ -1,0 +1,25 @@
+name: Build web panel
+on:
+  push:
+    branches: [main]
+    paths: ["web/**", ".github/workflows/web.yml"]
+  pull_request:
+    paths: ["web/**", ".github/workflows/web.yml"]
+  workflow_dispatch:
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: web
+      - run: cargo build --release
+        working-directory: web
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MCServerManagerWeb
+          path: |
+            web/target/release/MCServerManagerWeb.exe
+            web/deploy/setup-nginx.sh
