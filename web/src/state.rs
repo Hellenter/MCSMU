@@ -71,7 +71,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         let mut panel_tunnel = TunnelSettings::default();
-        panel_tunnel.command = "ssh -R 127.0.0.1:8080:localhost:8080 minecraft@ex1.ru".into();
+        panel_tunnel.command = "ssh -R 127.0.0.1:8080:127.0.0.1:8080 minecraft@ex1.ru".into();
         panel_tunnel.new_window = false;
         Settings {
             open_registration: false,
