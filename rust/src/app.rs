@@ -161,6 +161,8 @@ pub struct App {
     allow_close: bool,
     tunnel_log_counter: u64,
     prev_status: HashMap<String, Status>,
+    // окна админ-панели MGP
+    mgp_panels: Vec<crate::mgp::MgpPanel>,
 }
 
 fn open_path(p: &Path) {
@@ -227,6 +229,7 @@ impl App {
             allow_close: false,
             tunnel_log_counter: 0,
             prev_status: HashMap::new(),
+            mgp_panels: vec![],
         };
         app.select(current);
         app
@@ -1000,6 +1003,10 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ctx, |ui| self.main_area(ui));
         self.dialogs(ctx);
         self.server_editor(ctx);
+        for p in &mut self.mgp_panels {
+            p.show(ctx);
+        }
+        self.mgp_panels.retain(|p| p.is_open());
     }
 }
 
@@ -1119,6 +1126,15 @@ impl App {
         });
     }
 
+    fn open_mgp(&mut self, ctx: &egui::Context, s: &Server) {
+        if let Some(p) = self.mgp_panels.iter().find(|p| p.sid == s.id) {
+            // окно уже открыто: выводим его вперёд
+            ctx.send_viewport_cmd_to(p.viewport_id(), egui::ViewportCommand::Focus);
+            return;
+        }
+        self.mgp_panels.push(crate::mgp::MgpPanel::new(ctx, &s.id, &s.name, Path::new(&s.path)));
+    }
+
     fn move_server(&mut self, d: i32) {
         let Some(id) = self.current.clone() else { return };
         let i = self.cfg.servers.iter().position(|s| s.id == id).unwrap_or(0) as i32;
@@ -1191,6 +1207,13 @@ impl App {
             ui.separator();
             if ui.button("💾  Бэкап сейчас").clicked() {
                 self.backup_now(&s.id, "");
+            }
+            if crate::mgp::installed(Path::new(&s.path)) {
+                ui.separator();
+                let btn = egui::Button::new(RichText::new("🎮  Мини-игры (MGP)").strong());
+                if ui.add(btn).on_hover_text("Админ-панель MGP в отдельном окне: игры, игроки, карты").clicked() {
+                    self.open_mgp(ui.ctx(), &s);
+                }
             }
             ui.separator();
             let ts = self.tunnel.state();
