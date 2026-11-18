@@ -161,6 +161,8 @@ pub struct App {
     allow_close: bool,
     tunnel_log_counter: u64,
     prev_status: HashMap<String, Status>,
+    // окна админ-панели MGP
+    mgp_panels: Vec<crate::mgp::MgpPanel>,
 }
 
 fn open_path(p: &Path) {
@@ -227,6 +229,7 @@ impl App {
             allow_close: false,
             tunnel_log_counter: 0,
             prev_status: HashMap::new(),
+            mgp_panels: vec![],
         };
         app.select(current);
         app
@@ -247,6 +250,18 @@ impl App {
 
     fn running_proc(&self) -> Option<Arc<ServerProcess>> {
         self.procs.values().find(|p| p.running()).cloned()
+    }
+
+    fn running_procs(&self) -> Vec<Arc<ServerProcess>> {
+        self.procs.values().filter(|p| p.running()).cloned().collect()
+    }
+
+    fn running_names(&self) -> String {
+        self.running_procs()
+            .iter()
+            .map(|p| format!("«{}»", self.cfg.server(&p.sid).map(|s| s.name.clone()).unwrap_or_default()))
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     fn status_of(&self, sid: &str) -> Status {
@@ -340,16 +355,23 @@ impl App {
 
     fn start_server(&mut self, sid: &str) {
         let Some(srv) = self.cfg.server(sid).cloned() else { return };
-        if let Some(other) = self.running_proc() {
-            if other.sid != sid {
-                let name = self.cfg.server(&other.sid).map(|s| s.name.clone()).unwrap_or_default();
-                self.confirm(
-                    "Сервер уже запущен",
-                    format!("Сейчас запущен «{}».\nОстановить его и запустить «{}»?", name, srv.name),
-                    Action::StopOtherAndStart { other: other.sid.clone(), next: sid.to_string() },
-                );
-                return;
-            }
+        // Несколько серверов могут работать одновременно, если у них разные порты (server-port).
+        let port = props::server_port(&srv.path);
+        let busy = self.running_procs().into_iter().find(|p| {
+            p.sid != sid && self.cfg.server(&p.sid).map(|o| props::server_port(&o.path) == port).unwrap_or(false)
+        });
+        if let Some(other) = busy {
+            let name = self.cfg.server(&other.sid).map(|s| s.name.clone()).unwrap_or_default();
+            self.confirm(
+                "Порт занят",
+                format!(
+                    "«{}» уже работает на порту {}.\nДва сервера не могут слушать один порт: поменяйте server-port \
+                     в server.properties одного из них.\n\nОстановить «{}» и запустить «{}»?",
+                    name, port, name, srv.name
+                ),
+                Action::StopOtherAndStart { other: other.sid.clone(), next: sid.to_string() },
+            );
+            return;
         }
         if self.props_dirty && self.current.as_deref() == Some(sid) {
             self.save_props();
@@ -409,7 +431,7 @@ impl App {
             self.pending_start = Some((sid.to_string(), Instant::now() + Duration::from_millis(1500)));
         } else if let Some(next) = self.start_after.take() {
             self.pending_start = Some((next, Instant::now() + Duration::from_millis(1000)));
-        } else if self.cfg.tunnel.stop_with_server {
+        } else if self.cfg.tunnel.stop_with_server && self.running_procs().is_empty() {
             self.tunnel.stop();
         }
         if self.cfg.server(sid).map(|s| s.backup_on_stop).unwrap_or(false) {
@@ -981,6 +1003,10 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ctx, |ui| self.main_area(ui));
         self.dialogs(ctx);
         self.server_editor(ctx);
+        for p in &mut self.mgp_panels {
+            p.show(ctx);
+        }
+        self.mgp_panels.retain(|p| p.is_open());
     }
 }
 
@@ -993,14 +1019,19 @@ impl App {
                 }
                 ui.add(egui::Label::new(&self.status_msg).truncate());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    match self.running_proc() {
-                        Some(p) => {
-                            let name = self.cfg.server(&p.sid).map(|s| s.name.clone()).unwrap_or_default();
-                            ui.label(RichText::new(format!("Запущен: {} ({})", name, p.status().ru())).color(GREEN));
-                        }
-                        None => {
-                            ui.weak("Ни один сервер не запущен");
-                        }
+                    let running = self.running_procs();
+                    if running.is_empty() {
+                        ui.weak("Ни один сервер не запущен");
+                    } else {
+                        let text = running
+                            .iter()
+                            .map(|p| {
+                                let name = self.cfg.server(&p.sid).map(|s| s.name.clone()).unwrap_or_default();
+                                format!("{} ({})", name, p.status().ru())
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        ui.label(RichText::new(format!("Запущены: {}", text)).color(GREEN));
                     }
                 });
             });
@@ -1095,6 +1126,15 @@ impl App {
         });
     }
 
+    fn open_mgp(&mut self, ctx: &egui::Context, s: &Server) {
+        if let Some(p) = self.mgp_panels.iter().find(|p| p.sid == s.id) {
+            // окно уже открыто: выводим его вперёд
+            ctx.send_viewport_cmd_to(p.viewport_id(), egui::ViewportCommand::Focus);
+            return;
+        }
+        self.mgp_panels.push(crate::mgp::MgpPanel::new(ctx, &s.id, &s.name, Path::new(&s.path)));
+    }
+
     fn move_server(&mut self, d: i32) {
         let Some(id) = self.current.clone() else { return };
         let i = self.cfg.servers.iter().position(|s| s.id == id).unwrap_or(0) as i32;
@@ -1167,6 +1207,13 @@ impl App {
             ui.separator();
             if ui.button("💾  Бэкап сейчас").clicked() {
                 self.backup_now(&s.id, "");
+            }
+            if crate::mgp::installed(Path::new(&s.path)) {
+                ui.separator();
+                let btn = egui::Button::new(RichText::new("🎮  Мини-игры (MGP)").strong());
+                if ui.add(btn).on_hover_text("Админ-панель MGP в отдельном окне: игры, игроки, карты").clicked() {
+                    self.open_mgp(ui.ctx(), &s);
+                }
             }
             ui.separator();
             let ts = self.tunnel.state();
@@ -2048,21 +2095,21 @@ impl App {
                     });
                 }
                 Dialog::CloseApp => {
-                    let name = self.running_proc().and_then(|p| self.cfg.server(&p.sid).map(|s| s.name.clone())).unwrap_or_default();
+                    let names = self.running_names();
                     ui.heading("Выход");
-                    ui.label(format!("Сервер «{}» запущен.", name));
+                    ui.label(format!("Запущено: {}.", names));
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
-                        if ui.button(RichText::new("Остановить сервер и выйти").strong()).clicked() {
+                        if ui.button(RichText::new("Остановить все серверы и выйти").strong()).clicked() {
                             keep = false;
-                            if let Some(p) = self.running_proc() {
+                            for p in self.running_procs() {
                                 p.restart_after_stop.store(false, std::sync::atomic::Ordering::SeqCst);
                                 p.stop(self.stop_timeout());
                             }
                             self.closing = Some(Instant::now());
-                            self.status_msg = "Останавливаю сервер перед выходом…".into();
+                            self.status_msg = "Останавливаю серверы перед выходом…".into();
                         }
-                        if ui.button("Выйти, оставив сервер работать").clicked() {
+                        if ui.button("Выйти, оставив серверы работать").clicked() {
                             keep = false;
                             self.allow_close = true;
                             self.save_cfg();

@@ -805,6 +805,15 @@ class App:
                 return p
         return None
 
+    def running_procs(self):
+        return [p for p in self.procs.values() if p.running]
+
+    def _port_of(self, s):
+        try:
+            return server_port(s["path"])
+        except Exception:
+            return None
+
     def refresh_server_list(self):
         self.srv_tree.delete(*self.srv_tree.get_children())
         for s in self.cfg.servers:
@@ -934,10 +943,16 @@ class App:
         s = self.srv()
         if not s:
             return
-        other = self.running_proc()
-        if other and other.sid != s["id"]:
-            if not messagebox.askyesno(APP_TITLE, "Сейчас запущен «%s».\nОстановить его и запустить «%s»?"
-                                       % (other.srv["name"], s["name"])):
+        # Несколько серверов могут работать одновременно, если у них разные порты (server-port).
+        port = self._port_of(s)
+        other = next((p for p in self.running_procs()
+                      if p.sid != s["id"] and port is not None and self._port_of(p.srv) == port), None)
+        if other:
+            if not messagebox.askyesno(APP_TITLE, "«%s» уже работает на порту %s.\n"
+                                       "Два сервера не могут слушать один порт: поменяйте server-port "
+                                       "в server.properties одного из них.\n\n"
+                                       "Остановить «%s» и запустить «%s»?"
+                                       % (other.srv["name"], port, other.srv["name"], s["name"])):
                 return
             other.restart_after_stop = False
             self._start_after = s["id"]
@@ -1002,7 +1017,7 @@ class App:
             nxt, self._start_after = self._start_after, None
             self.select_server(nxt)
             self.root.after(1000, self.start_server)
-        elif self.cfg.tunnel.get("stop_with_server") and self.tunnel.active:
+        elif self.cfg.tunnel.get("stop_with_server") and self.tunnel.active and not self.running_procs():
             self.tunnel.stop()
         if s and s.get("backup_on_stop"):
             self.backup_now(s, label="stop")
@@ -1024,8 +1039,9 @@ class App:
         self.btn_restart.configure(state=state(s is not None and st != STOPPING))
         self.btn_kill.configure(state=state(running))
         self.btn_backup_now.configure(state=state(s is not None))
-        rp = self.running_proc()
-        self.lbl_running.configure(text=("Запущен: %s (%s)" % (rp.srv["name"], STATUS_RU[rp.status])) if rp else "Ни один сервер не запущен")
+        rps = self.running_procs()
+        self.lbl_running.configure(text=("Запущены: " + ", ".join("%s (%s)" % (rp.srv["name"], STATUS_RU[rp.status]) for rp in rps))
+                                   if rps else "Ни один сервер не запущен")
         mode = "сервер запущен — изменения отправляются командами" if running and st == RUNNING else \
             "сервер выключен — изменения пишутся прямо в файлы"
         self.lbl_lists_mode.configure(text=mode)
@@ -1957,16 +1973,18 @@ class App:
                 on_done(r)
 
     def on_close(self):
-        rp = self.running_proc()
-        if rp:
-            ans = messagebox.askyesnocancel(APP_TITLE, "Сервер «%s» запущен.\n\nДа — остановить сервер и выйти\n"
-                                            "Нет — выйти, оставив сервер работать в фоне\nОтмена — вернуться" % rp.srv["name"])
+        rps = self.running_procs()
+        if rps:
+            names = ", ".join("«%s»" % rp.srv["name"] for rp in rps)
+            ans = messagebox.askyesnocancel(APP_TITLE, "Запущено: %s.\n\nДа — остановить все серверы и выйти\n"
+                                            "Нет — выйти, оставив серверы работать в фоне\nОтмена — вернуться" % names)
             if ans is None:
                 return
             if ans:
-                rp.restart_after_stop = False
-                rp.stop(self._stop_timeout())
-                self.set_bar("Останавливаю сервер перед выходом…")
+                for rp in rps:
+                    rp.restart_after_stop = False
+                    rp.stop(self._stop_timeout())
+                self.set_bar("Останавливаю серверы перед выходом…")
                 self._wait_and_close(time.time())
                 return
         self._final_close()

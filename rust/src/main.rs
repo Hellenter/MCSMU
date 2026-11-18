@@ -6,6 +6,7 @@ mod backup;
 mod config;
 mod launch;
 mod lists;
+mod mgp;
 mod mods;
 mod ping;
 mod props;
